@@ -1,152 +1,179 @@
-name: Extension builder
+name: CI
 
 on:
   push:
-    branches: [ master ]
+    branches:
+      - master
+      - main
+    tags:
+      - "v*"
+
   pull_request:
-    branches: [ master ]
+    branches:
+      - master
+      - main
+
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
-    strategy:
-      matrix:
-        python-version: ['3.11']
-        os: [ubuntu-24.04, windows-2022]
-        include:
-          - os: ubuntu-24.04
-            cc: clang-17
-            cxx: clang++-17
-          - os: windows-2022
-            cc: msvc
-      fail-fast: false
-
-    name: ${{ matrix.os }} - ${{ matrix.cc }}
+    name: Build Linux x86_64 with SourceMod 1.12
     runs-on: ${{ matrix.os }}
 
-    env:
-      PROJECT: 'connect'
-      SDKS: 'css hl2dm dods tf2'
-      MMSOURCE_VERSION: '1.12'
-      SOURCEMOD_VERSION: '1.12'
-      CACHE_PATH: ${{ github.workspace }}/cache
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            sourcemod-version: 1.12-dev
+            target-archs: x86_64
+            sdks: sdk2013
+
     steps:
-      - name: Concatenate SDK Names
-        shell: bash
+      - name: Install Linux packages
         run: |
-          # Paranoia
-          SDKS_VAR="${{env.SDKS}}"
-          # This will be used in our cache key
-          echo "SDKS_KEY=${SDKS_VAR//[[:blank:]]/}" >> $GITHUB_ENV
-    
-      - uses: actions/setup-python@v5
-        if: startsWith(matrix.os, 'windows-')
-        name: Setup Python ${{ matrix.python-version }}
+          sudo apt-get update
+          sudo apt-get install -y \
+            g++ \
+            libjansson-dev \
+            python3-pip
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-      
-      - uses: actions/checkout@v4
-        name: Repository checkout
+          python-version: "3.11"
+
+      - name: Checkout extension
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           path: extension
-        
-      - uses: actions/cache@v4
-        name: Cache dependencies
-        env:
-          cache-name: connect-cache
+
+      - name: Checkout SourceMod 1.12
+        uses: actions/checkout@v4
         with:
-          path: ${{ env.CACHE_PATH }}
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-sm${{ env.SOURCEMOD_VERSION }}-mmsource${{ env.MMSOURCE_VERSION }}-${{ env.SDKS_KEY }}
+          repository: alliedmodders/sourcemod
+          ref: ${{ matrix.sourcemod-version }}
+          path: sourcemod
+          submodules: recursive
 
-      - shell: bash
-        name: Install dependencies
-        run: |
-          mkdir -p "${{ env.CACHE_PATH }}"
-          cd "${{ env.CACHE_PATH }}"
-          shallow_checkout () {
-              if [ ! -d "$3" ]; then
-                  git clone "$1" --depth 1 --branch "$2" "$3"
-              fi
-              cd "$3"
-              git submodule deinit --all --force
-              git remote set-url origin "$1"
-              git fetch --depth 1 origin "$2"
-              git checkout --force --recurse-submodules FETCH_HEAD
-              git submodule init
-              git submodule update --depth 1
-              cd ..
-          }
-          git config --global advice.detachedHead false
-          for sdk in ${{ env.SDKS }}
-          do
-              shallow_checkout "https://github.com/alliedmodders/hl2sdk" "${sdk}" "hl2sdk-${sdk}"
-          done
-          shallow_checkout "https://github.com/alliedmodders/ambuild" "master" "ambuild"
-          shallow_checkout "https://github.com/alliedmodders/sourcemod" "${{env.SOURCEMOD_VERSION}}-dev" "sourcemod"
-          shallow_checkout "https://github.com/alliedmodders/metamod-source/" "${{env.MMSOURCE_VERSION}}-dev" "metamod-source"
-          git config --global advice.detachedHead true
+      - name: Checkout AMBuild
+        uses: actions/checkout@v4
+        with:
+          repository: alliedmodders/ambuild
+          path: ambuild
 
-      - name: Build
+      - name: Checkout sm-ext-common
+        uses: actions/checkout@v4
+        with:
+          repository: srcdslab/sm-ext-common
+          path: sourcemod/extensions/sm-ext-common
+
+      - name: Install SourceMod dependencies
         shell: bash
-        working-directory: extension
         run: |
-          export PLATFORM="${{ runner.os }}"
+          set -euo pipefail
 
-          if [[ $PLATFORM == Linux* ]]; then
-            docker run \
-              -e PLATFORM="$PLATFORM" \
-              -e PROJECT=${{ env.PROJECT }} \
-              -e SDKS="${{ env.SDKS }}" \
-              -e MMSOURCE_VERSION=${{ env.MMSOURCE_VERSION }} \
-              -e SOURCEMOD_VERSION=${{ env.SOURCEMOD_VERSION }} \
-              -e CACHE_PATH=${{ env.CACHE_PATH }} \
-              -e SDKS_KEY=${{ env.SDKS_KEY }} \
-              -e CC=${{ matrix.cc }} \
-              -e CXX=${{ matrix.cxx }} \
-              --mount type=bind,source=${{ env.CACHE_PATH }},target=${{ env.CACHE_PATH }} \
-              --mount type=bind,source=$PWD,target=$PWD \
-              "registry.gitlab.steamos.cloud/steamrt/sniper/sdk:latest" \
-              "$PWD/.github/workflows/build.sh"
+          bash sourcemod/tools/checkout-deps.sh \
+            -m \
+            -s "${{ matrix.sdks }}"
 
-            sudo chown -R $USER .
-          else
-            bash ./.github/workflows/build.sh
+      - name: Install AMBuild
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+          python -m pip install ./ambuild
+
+      - name: Build 64-bit extension
+        working-directory: extension
+        shell: bash
+        env:
+          BREAKPAD_SYMBOL_SERVER: ${{ secrets.BREAKPAD_SYMBOL_SERVER }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p build
+          cd build
+
+          python ../configure.py \
+            --enable-optimize \
+            --targets="${{ matrix.target-archs }}" \
+            --sdks="${{ matrix.sdks }}"
+
+          ambuild
+
+      - name: Verify package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PACKAGE_DIR="extension/build/package"
+
+          if [[ ! -d "${PACKAGE_DIR}" ]]; then
+            echo "ERROR: Package directory was not created:"
+            echo "  ${PACKAGE_DIR}"
+            exit 1
           fi
 
-          FILENAME="$(cat build/includes/filename_versioning.txt)"
-          # Format platform lowercase cleanly for naming
-          PLATFORM_LOWER="${PLATFORM,,}"
-          ZIP_FILENAME="${{ env.PROJECT }}-${FILENAME}-${PLATFORM_LOWER}.zip"
+          if [[ -z "$(find "${PACKAGE_DIR}" -type f -print -quit)" ]]; then
+            echo "ERROR: Package directory is empty."
+            exit 1
+          fi
 
-          echo "ZIP_FILENAME=${ZIP_FILENAME}" >> $GITHUB_ENV
+          echo "Generated package:"
+          find "${PACKAGE_DIR}" -type f -print | sort
 
-      - name: Package release - Windows
-        if: startsWith(matrix.os, 'windows-')
-        working-directory: extension/build/package
-        run: |
-          Compress-Archive -Path * -Destination ${{ env.ZIP_FILENAME }}
-          
-          # Create a unified release directory for artifacts
-          mkdir -p "${{ github.workspace }}/release"
-          Copy-Item -Path ${{ env.ZIP_FILENAME }} -Destination "${{ github.workspace }}/release/${{ matrix.os }}_${{ matrix.cc }}_${{ env.ZIP_FILENAME }}"
-
-      - name: Package release - Linux
-        if: startsWith(matrix.os, 'ubuntu-')
-        working-directory: extension/build/package
-        run: |
-          zip -r "${{ env.ZIP_FILENAME }}" .
-          
-          mkdir -p "${{ github.workspace }}/release"
-          cp "${{ env.ZIP_FILENAME }}" "${{ github.workspace }}/release/${{ matrix.os }}_${{ matrix.cc }}_${{ env.ZIP_FILENAME }}"
-
-      - name: Upload release archives
-        if: success()
+      - name: Upload 64-bit build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: extension-builds-${{ matrix.os }}-${{ matrix.cc }}
-          path: release/*.zip
+          name: package-linux-x86_64-sm1.12
+          path: extension/build/package
           if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Create GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Download 64-bit build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: package-linux-x86_64-sm1.12
+          path: packaged-files
+
+      - name: Create release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${GITHUB_REF_NAME}"
+          ARCHIVE="${{ github.event.repository.name }}-${VERSION}-linux-x86_64-sm1.12.tar.gz"
+
+          if [[ -z "$(find packaged-files -type f -print -quit)" ]]; then
+            echo "ERROR: No files were downloaded from the build artifact."
+            exit 1
+          fi
+
+          tar \
+            --create \
+            --gzip \
+            --file "${ARCHIVE}" \
+            --directory packaged-files \
+            .
+
+          echo "Created release archive:"
+          ls -lh "${ARCHIVE}"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: "*.tar.gz"
+          generate_release_notes: true
