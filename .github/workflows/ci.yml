@@ -47,6 +47,11 @@ jobs:
           fetch-depth: 0
           path: extension
 
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Cache dependencies
         uses: actions/cache@v4
         with:
@@ -112,13 +117,8 @@ jobs:
             "metamod-source"
 
           git config --global advice.detachedHead true
-          
-        - name: Set up MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-          with:
-          arch: x64
 
-        - name: Build Windows 64-bit extension
+      - name: Build Windows 64-bit extension
         shell: bash
         working-directory: extension
         env:
