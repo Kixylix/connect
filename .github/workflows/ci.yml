@@ -22,8 +22,8 @@ jobs:
     env:
       PROJECT: connect
       PLATFORM: Windows
-      CC: cl
-      CXX: cl
+      CC: cl.exe
+      CXX: cl.exe
       SDKS: tf2
       TARGET_ARCHS: x86_64
       MMSOURCE_VERSION: "1.12"
