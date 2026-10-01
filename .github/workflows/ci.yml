@@ -21,7 +21,7 @@ jobs:
 
     env:
       PROJECT: connect
-      SDKS: hl2sdk-tf2
+      SDKS: tf2
       TARGET_ARCHS: x86_64
       MMSOURCE_VERSION: 1.12
       SOURCEMOD_VERSION: 1.12
