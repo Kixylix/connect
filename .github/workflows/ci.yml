@@ -113,12 +113,12 @@ jobs:
 
           git config --global advice.detachedHead true
           
-- name: Set up MSVC
+        - name: Set up MSVC
         uses: ilammy/msvc-dev-cmd@v1
-        with:
+          with:
           arch: x64
 
-      - name: Build Windows 64-bit extension
+        - name: Build Windows 64-bit extension
         shell: bash
         working-directory: extension
         env:
