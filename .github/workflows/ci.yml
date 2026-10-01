@@ -113,37 +113,10 @@ jobs:
 
           git config --global advice.detachedHead true
           
-      - name: Set up MSVC
-      uses: ilammy/msvc-dev-cmd@v1
+- name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
         with:
-        arch: x64
-        
-      - name: Build
-        shell: bash
-        env:
-        CC: msvc
-        CXX: msvc
-        run: |
-          set -euo pipefail
-          bash ./.github/workflows/build.sh
-          
-            if [[ ! -f build/includes/filename_versioning.txt ]]; then
-              echo "ERROR: Build version file was not generated."
-            exit 1
-            fi
-          
-          if [[ ! -d build/package ]]; then
-            echo "ERROR: Build package directory was not generated."
-          exit 1
-          fi
-
-    FILENAME="$(cat build/includes/filename_versioning.txt)"
-    ZIP_FILENAME="${PROJECT}-${FILENAME}-windows-x86_64.zip"
-
-    echo "ZIP_FILENAME=${ZIP_FILENAME}" >> "${GITHUB_ENV}"
-
-    echo "Build output:"
-    find build/package -type f -print | sort
+          arch: x64
 
       - name: Build Windows 64-bit extension
         shell: bash
@@ -151,6 +124,7 @@ jobs:
         env:
           PLATFORM: Windows
           CC: msvc
+          CXX: msvc
           TARGET_ARCHS: ${{ env.TARGET_ARCHS }}
         run: |
           set -euo pipefail
