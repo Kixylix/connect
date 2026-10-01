@@ -21,10 +21,13 @@ jobs:
 
     env:
       PROJECT: connect
+      PLATFORM: Windows
+      CC: msvc
+      CXX: msvc
       SDKS: tf2
       TARGET_ARCHS: x86_64
-      MMSOURCE_VERSION: 1.12
-      SOURCEMOD_VERSION: 1.12
+      MMSOURCE_VERSION: "1.12"
+      SOURCEMOD_VERSION: "1.12"
       CACHE_PATH: ${{ github.workspace }}/cache
 
     steps:
