@@ -1,172 +1,177 @@
-name: CI
+name: Extension builder
 
 on:
   push:
     branches:
       - master
-      - main
-    tags:
-      - "v*"
 
   pull_request:
     branches:
       - master
-      - main
 
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
-    name: Build Windows x86_64 with SourceMod 1.12
+    name: Windows x86_64 - SourceMod 1.12
     runs-on: windows-2022
 
+    env:
+      PROJECT: connect
+      SDKS: tf2
+      TARGET_ARCHS: x86_64
+      MMSOURCE_VERSION: 1.12
+      SOURCEMOD_VERSION: 1.12
+      CACHE_PATH: ${{ github.workspace }}/cache
+
     steps:
+      - name: Set SDK cache key
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDKS_KEY="${SDKS//[[:blank:]]/}"
+          echo "SDKS_KEY=${SDKS_KEY}" >> "${GITHUB_ENV}"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Checkout extension
+      - name: Check out extension
         uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           path: extension
 
-      - name: Checkout SourceMod 1.12
-        uses: actions/checkout@v4
+      - name: Cache dependencies
+        uses: actions/cache@v4
         with:
-          repository: alliedmodders/sourcemod
-          ref: 1.12-dev
-          path: sourcemod
-          submodules: recursive
+          path: ${{ env.CACHE_PATH }}
+          key: ${{ runner.os }}-build-${{ env.PROJECT }}-sm${{ env.SOURCEMOD_VERSION }}-mm${{ env.MMSOURCE_VERSION }}-${{ env.SDKS }}-${{ env.TARGET_ARCHS }}
+          restore-keys: |
+            ${{ runner.os }}-build-${{ env.PROJECT }}-sm${{ env.SOURCEMOD_VERSION }}-mm${{ env.MMSOURCE_VERSION }}-${{ env.SDKS }}-
 
-      - name: Checkout AMBuild
-        uses: actions/checkout@v4
-        with:
-          repository: alliedmodders/ambuild
-          path: ambuild
-
-      - name: Checkout sm-ext-common
-        uses: actions/checkout@v4
-        with:
-          repository: srcdslab/sm-ext-common
-          path: sourcemod/extensions/sm-ext-common
-
-      - name: Install SourceMod dependencies
+      - name: Install dependencies
         shell: bash
         run: |
           set -euo pipefail
 
-          bash sourcemod/tools/checkout-deps.sh \
-            -m \
-            -s sdk2013
+          mkdir -p "${CACHE_PATH}"
+          cd "${CACHE_PATH}"
 
-      - name: Install AMBuild
-        shell: bash
-        run: |
-          set -euo pipefail
+          shallow_checkout() {
+              # Param 1: repository URL
+              # Param 2: branch
+              # Param 3: checkout directory
+              if [[ ! -d "$3/.git" ]]; then
+                  git clone \
+                    --depth 1 \
+                    --branch "$2" \
+                    "$1" \
+                    "$3"
+              fi
 
-          python -m pip install --upgrade pip
-          python -m pip install ./ambuild
+              cd "$3"
+
+              git submodule deinit --all --force || true
+              git remote set-url origin "$1"
+              git fetch --depth 1 origin "$2"
+              git checkout --force --recurse-submodules FETCH_HEAD
+              git submodule update --init --depth 1
+
+              cd ..
+          }
+
+          git config --global advice.detachedHead false
+
+          # Only the TF2 SDK is required.
+          for sdk in ${SDKS}; do
+              shallow_checkout \
+                "https://github.com/alliedmodders/hl2sdk" \
+                "${sdk}" \
+                "hl2sdk-${sdk}"
+          done
+
+          shallow_checkout \
+            "https://github.com/alliedmodders/ambuild" \
+            "master" \
+            "ambuild"
+
+          shallow_checkout \
+            "https://github.com/alliedmodders/sourcemod" \
+            "${SOURCEMOD_VERSION}-dev" \
+            "sourcemod"
+
+          shallow_checkout \
+            "https://github.com/alliedmodders/metamod-source" \
+            "${MMSOURCE_VERSION}-dev" \
+            "metamod-source"
+
+          git config --global advice.detachedHead true
 
       - name: Build Windows 64-bit extension
-        working-directory: extension
         shell: bash
+        working-directory: extension
         env:
-          BREAKPAD_SYMBOL_SERVER: ${{ secrets.BREAKPAD_SYMBOL_SERVER }}
+          PLATFORM: Windows
+          CC: msvc
+          TARGET_ARCHS: ${{ env.TARGET_ARCHS }}
         run: |
           set -euo pipefail
 
-          mkdir -p build
-          cd build
+          bash ./.github/workflows/build.sh
 
-          python ../configure.py \
-            --enable-optimize \
-            --targets=x86_64 \
-            --sdks=sdk2013
-
-          ambuild
-
-      - name: Verify package
-        working-directory: extension
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          PACKAGE_DIR="build/package"
-
-          if [[ ! -d "${PACKAGE_DIR}" ]]; then
-            echo "ERROR: Package directory was not created:"
-            echo "  ${PACKAGE_DIR}"
-            exit 1
+          if [[ ! -f build/includes/filename_versioning.txt ]]; then
+              echo "ERROR: Build version file was not generated."
+              exit 1
           fi
 
-          if [[ -z "$(find "${PACKAGE_DIR}" -type f -print -quit)" ]]; then
-            echo "ERROR: Package directory is empty."
-            exit 1
+          if [[ ! -d build/package ]]; then
+              echo "ERROR: Build package directory was not generated."
+              exit 1
           fi
 
-          echo "Generated package:"
-          find "${PACKAGE_DIR}" -type f -print | sort
+          FILENAME="$(cat build/includes/filename_versioning.txt)"
+          ZIP_FILENAME="${PROJECT}-${FILENAME}-windows-x86_64.zip"
 
-      - name: Create Windows release archive
+          echo "ZIP_FILENAME=${ZIP_FILENAME}" >> "${GITHUB_ENV}"
+
+          echo "Build output:"
+          find build/package -type f -print | sort
+
+      - name: Package Windows release
         shell: pwsh
+        working-directory: extension/build/package
         env:
-          PACKAGE_DIR: ${{ github.workspace }}\extension\build\package
-          RELEASE_DIR: ${{ github.workspace }}\release
+          RELEASE_DIR: ${{ github.workspace }}/release
         run: |
           $ErrorActionPreference = "Stop"
 
-          New-Item -ItemType Directory -Force -Path $env:RELEASE_DIR | Out-Null
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $env:RELEASE_DIR | Out-Null
 
-          $version = "${env:GITHUB_REF_NAME}"
-          if ([string]::IsNullOrWhiteSpace($version) -or $version -eq "main") {
-            $version = "build-${env:GITHUB_RUN_NUMBER}"
-          }
-
-          $archiveName = "${{ github.event.repository.name }}-${version}-windows-x86_64-sm1.12.zip"
-          $archivePath = Join-Path $env:RELEASE_DIR $archiveName
+          $archivePath = Join-Path `
+            $env:RELEASE_DIR `
+            "${env:ZIP_FILENAME}"
 
           Compress-Archive `
-            -Path (Join-Path $env:PACKAGE_DIR "*") `
+            -Path * `
             -DestinationPath $archivePath `
             -CompressionLevel Optimal
 
-          Write-Host "Created release archive:"
+          Write-Host "Created archive:"
           Get-Item $archivePath
 
       - name: Upload Windows 64-bit build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: package-windows-x86_64-sm1.12
+          name: windows-x86_64-sm1.12
           path: release/*.zip
           if-no-files-found: error
           retention-days: 14
-
-  release:
-    name: Create GitHub Release
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: build
-    runs-on: ubuntu-22.04
-
-    steps:
-      - name: Download Windows 64-bit artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: package-windows-x86_64-sm1.12
-          path: release
-
-      - name: List release files
-        shell: bash
-        run: |
-          set -euo pipefail
-          find release -type f -print -exec ls -lh {} \;
-
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          files: release/*.zip
-          generate_release_notes: true
