@@ -126,8 +126,8 @@ jobs:
         working-directory: extension
         env:
           PLATFORM: Windows
-          CC: msvc
-          CXX: msvc
+          CC: cl
+          CXX: cl
           TARGET_ARCHS: ${{ env.TARGET_ARCHS }}
         run: |
           set -euo pipefail
